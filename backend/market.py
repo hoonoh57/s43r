@@ -31,6 +31,29 @@ class TickBars:
         return None
     def tick(self,date,tm,price,volume):return self.add(dict(date=date,time=tm[:4],full_time=tm,open=price,high=price,low=price,close=price,volume=volume))
 
+def _loose_tail(one_ticks,target,max_count=30):
+    """체결시각 비교만 뺀 대조. 후보가 정확히 1개일 때만 채택한다."""
+    found=[]
+    for end in range(len(one_ticks),0,-1):
+        z=one_ticks[end-1]
+        if abs(z['close']-target['close'])>1e-8:continue
+        hi=-float('inf');lo=float('inf');vol=0
+        for start in range(end-1,max(-1,end-max_count-1),-1):
+            a=one_ticks[start];hi=max(hi,a['high']);lo=min(lo,a['low']);vol+=a['volume']
+            if vol>target['volume']+1e-8:break
+            if a['date']==target['date'] and abs(a['open']-target['open'])<1e-8 and abs(hi-target['high'])<1e-8 and abs(lo-target['low'])<1e-8 and abs(vol-target['volume'])<1e-8:found.append((start,end))
+    if len(found)!=1:return None
+    a,b=found[0];return one_ticks[a:b]
+
+def _dump_tail(one_ticks,target,strict):
+    try:
+        import json,time as _t,pathlib as _p
+        d=_p.Path(__file__).resolve().parent.parent/'seed_debug';d.mkdir(exist_ok=True)
+        for f in sorted(d.glob('*.json'))[:-40]:f.unlink()
+        name=f"{target.get('date','')}_{target.get('full_time','')}_{_t.time_ns()}.json"
+        (d/name).write_text(json.dumps({'strict':strict,'target':target,'one_tail':one_ticks[-150:]},ensure_ascii=False,indent=1),encoding='utf-8')
+    except Exception:pass
+
 def match_tail(one_ticks,target,max_count=30):
     found=[]
     for end in range(len(one_ticks),0,-1):
@@ -38,8 +61,12 @@ def match_tail(one_ticks,target,max_count=30):
         for start in range(end-1,max(-1,end-max_count-1),-1):
             b=one_ticks[start];hi=max(hi,b['high']);lo=min(lo,b['low']);vol+=b['volume'];a=one_ticks[start];z=one_ticks[end-1]
             if a['date']==target['date'] and z.get('full_time')==target.get('full_time') and all(abs(x-y)<1e-8 for x,y in [(a['open'],target['open']),(z['close'],target['close']),(hi,target['high']),(lo,target['low']),(vol,target['volume'])]):found.append((start,end))
-    if len(found)!=1:raise ValueError('마지막 30틱 봉의 경계를 유일하게 확인하지 못했습니다.')
-    a,b=found[0];return one_ticks[a:b]
+    if len(found)==1:
+        a,b=found[0];return one_ticks[a:b]
+    loose=_loose_tail(one_ticks,target,max_count) if not found else None
+    if loose is not None:return loose
+    _dump_tail(one_ticks,target,len(found))
+    raise ValueError(f'마지막 30틱 봉의 경계를 유일하게 확인하지 못했습니다. (엄격 {len(found)}건 · seed_debug 저장)')
 
 def build_history(thirties,ones,date):
     if not thirties or not ones:raise ValueError('워밍업 시세가 비어 있습니다.')
