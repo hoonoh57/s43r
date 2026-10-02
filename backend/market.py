@@ -31,7 +31,23 @@ class TickBars:
         return None
     def tick(self,date,tm,price,volume):return self.add(dict(date=date,time=tm[:4],full_time=tm,open=price,high=price,low=price,close=price,volume=volume))
 
-def _loose_tail(one_ticks,target,max_count=30):
+def market_quiet(t=None):
+    """체결이 들어오지 않는 시간대(주말, 20:00~08:00, 08:50~09:00). 30틱/1틱 조회 사이 경합이 없다."""
+    t=t or now()
+    if t.weekday()>=5:return True
+    h=t.strftime('%H%M%S')
+    return h<'080000' or h>='200000' or '085000'<=h<'090000'
+
+def _same(one_ticks,found,quiet):
+    """체결 없는 시간대에만: 후보 구간 체결 내용이 모두 같고 최신 후보가 마지막 틱에서 끝나면 그 1개로 확정."""
+    if not quiet or len(found)<2:return found
+    key=lambda ab:[(x['date'],x.get('full_time'),x['open'],x['high'],x['low'],x['close'],x['volume']) for x in one_ticks[ab[0]:ab[1]]]
+    k0=key(found[0])
+    if any(key(f)!=k0 for f in found[1:]):return found
+    best=max(found,key=lambda ab:ab[1])
+    return [best] if best[1]==len(one_ticks) else found
+
+def _loose_tail(one_ticks,target,max_count=30,quiet=False):
     """체결시각 비교만 뺀 대조. 후보가 정확히 1개일 때만 채택한다."""
     found=[]
     for end in range(len(one_ticks),0,-1):
@@ -45,6 +61,7 @@ def _loose_tail(one_ticks,target,max_count=30):
     if len(found)!=1:
         ft=target.get('full_time')
         anchored=[(a,b) for a,b in found if ft and ft in (one_ticks[a].get('full_time'),one_ticks[b-1].get('full_time'))]
+        anchored=_same(one_ticks,anchored,quiet)
         if len(anchored)!=1:return None
         found=anchored
     a,b=found[0];return one_ticks[a:b]
@@ -58,16 +75,17 @@ def _dump_tail(one_ticks,target,strict):
         (d/name).write_text(json.dumps({'strict':strict,'target':target,'one_tail':one_ticks[-150:]},ensure_ascii=False,indent=1),encoding='utf-8')
     except Exception:pass
 
-def match_tail(one_ticks,target,max_count=30):
+def match_tail(one_ticks,target,max_count=30,quiet=False):
     found=[]
     for end in range(len(one_ticks),0,-1):
         hi=-float('inf');lo=float('inf');vol=0
         for start in range(end-1,max(-1,end-max_count-1),-1):
             b=one_ticks[start];hi=max(hi,b['high']);lo=min(lo,b['low']);vol+=b['volume'];a=one_ticks[start];z=one_ticks[end-1]
             if a['date']==target['date'] and z.get('full_time')==target.get('full_time') and all(abs(x-y)<1e-8 for x,y in [(a['open'],target['open']),(z['close'],target['close']),(hi,target['high']),(lo,target['low']),(vol,target['volume'])]):found.append((start,end))
+    found=_same(one_ticks,found,quiet)
     if len(found)==1:
         a,b=found[0];return one_ticks[a:b]
-    loose=_loose_tail(one_ticks,target,max_count) if not found else None
+    loose=_loose_tail(one_ticks,target,max_count,quiet) if not found else None
     if loose is not None:return loose
     _dump_tail(one_ticks,target,len(found))
     raise ValueError(f'마지막 30틱 봉의 경계를 유일하게 확인하지 못했습니다. (엄격 {len(found)}건 · seed_debug 저장)')
@@ -75,7 +93,7 @@ def match_tail(one_ticks,target,max_count=30):
 def build_history(thirties,ones,date):
     if not thirties or not ones:raise ValueError('워밍업 시세가 비어 있습니다.')
     if thirties[0]['date']>=date:raise ValueError('당일 시작 경계가 없어 추가 연속조회가 필요합니다.')
-    tail=match_tail(ones,thirties[-1]);builder=TickBars();bars=[]
+    tail=match_tail(ones,thirties[-1],quiet=market_quiet());builder=TickBars();bars=[]
     for b in thirties[:-1]:
         out=builder.add(b,30)
         if out:bars.append(out)
