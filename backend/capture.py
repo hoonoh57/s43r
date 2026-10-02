@@ -7,6 +7,19 @@ from . import sim as S
 DIR = pathlib.Path(os.environ.get('S43R_CAPTURE_DIR') or (pathlib.Path(ROOT).parent / 'kiwoom1516' / 'data'))
 _cache = {}
 _tcache = {}
+PATTERNS = tuple(x.strip() for x in (os.environ.get('S43R_CAPTURE_GLOB') or
+    'lab-*.json,lab-*.json.txt,strategy-audit-*.json,strategy-audit-*.json.txt').split(',') if x.strip())
+MAX_BYTES = 64 * 1024 * 1024
+
+
+def _files():
+    """틱봉 등 다른 대용량 JSON은 건드리지 않고 포착 기록 파일만 고른다."""
+    seen = {}
+    for pat in PATTERNS:
+        for p in DIR.glob(pat):
+            if p.is_file():
+                seen[str(p)] = p
+    return [seen[k] for k in sorted(seen)]
 
 
 def _date(v):
@@ -95,10 +108,12 @@ def index():
     merged, files = {}, {}
     if not DIR.is_dir():
         return merged, files
-    for p in sorted(DIR.glob('*.json')):
+    for p in _files():
         try:
             st = p.stat()
         except OSError:
+            continue
+        if st.st_size > MAX_BYTES:
             continue
         key = (st.st_mtime_ns, st.st_size)
         c = _cache.get(str(p))

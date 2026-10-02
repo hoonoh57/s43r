@@ -64,7 +64,7 @@ async function loadDates(){const r=await api('/api/sim/capture-dates');
   if($('#dSel').value)await loadDay()}
 function lock(b){['#dGet','#dRun','#dSel'].forEach(s=>$(s).disabled=b)}
 async function download(){const date=$('#dSel').value,codes=visible().filter(x=>CHECK.has(x.code)&&['none','short'].includes(status(x)[0])).map(x=>x.code);
-  if(!codes.length)return say('받을 종목이 없습니다. (선택 종목 모두 수신 완료)','ok');
+  if(!DAY)return say('포착일 목록이 아직 없습니다.','bad');if(!codes.length)return say('받을 종목이 없습니다. (선택 종목 모두 수신 완료)','ok');
   lock(true);const fails=[];
   try{for(let i=0;i<codes.length;i+=30){const part=codes.slice(i,i+30);
       const job=await api('/api/sim/cybos/fetch',{codes:part.join(','),date,prior:+$('#dPrior').value});
@@ -76,7 +76,7 @@ async function download(){const date=$('#dSel').value,codes=visible().filter(x=>
     say(fails.length?`완료 · 실패 ${fails.length}: `+fails.map(r=>`${r.code} ${r.msg}`).join(' / '):`다운로드 완료 · ${codes.length}종목`,fails.length?'bad':'ok')}
   catch(e){say(e.message,'bad')}finally{lock(false)}}
 async function runDay(){const date=$('#dSel').value,codes=visible().filter(x=>CHECK.has(x.code)&&x.tick&&x.tick.day).map(x=>x.code);
-  if(!codes.length)return say('실행할 틱 파일이 없습니다. 먼저 다운로드하세요.','bad');
+  if(!DAY)return say('포착일 목록이 아직 없습니다.','bad');if(!codes.length)return say('실행할 틱 파일이 없습니다. 먼저 다운로드하세요.','bad');
   const o=typeof window.opts==='function'?window.opts():{};lock(true);say(`${codes.length}종목 시뮬레이션 중…`);
   try{const r=await api('/api/sim/day',{date,codes,size:o.size||size(),slip:o.slip??1,cost:o.cost??0.25,capital:o.capital??1000000,params:o.params||{}});
     for(const x of r.rows)SIM[x.code]=x;$('#dPanel').hidden=false;render();
@@ -101,6 +101,6 @@ async function mount(){const st=document.createElement('style');st.textContent=c
   P.addEventListener('click',e=>{const b=e.target.closest('.dOpen');if(b)openFile(b.dataset.file)});
   for(let i=0;i<50;i++){const s=$('#file');if(s&&s.options.length)break;await sleep(100)}
   window.simReloadFiles=()=>loadDay(true).catch(e=>say(e.message,'bad'));
-  try{await loadDates()}catch(e){say('포착 목록 실패: '+e.message,'bad')}}
+  lock(true);say('포착 기록 읽는 중…');const t0=Date.now();try{await loadDates();if($('#dMsg').textContent.startsWith('포착 기록 읽는'))say('포착 기록 '+((Date.now()-t0)/1000).toFixed(1)+'s','ok')}catch(e){say('포착 목록 실패: '+e.message,'bad')}finally{lock(false)}}
 document.readyState==='loading'?document.addEventListener('DOMContentLoaded',mount):mount();
 })();
