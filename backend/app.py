@@ -117,7 +117,7 @@ def create_app(folder=None):
     register(app,body)
     register_ops(app)
     register_sim(app)
-    from .cybos_bridge import register_cybos; register_cybos(app)
+    from .cybos_bridge import register_cybos; register_cybos(app); from .capture import register_capture; register_capture(app)
     @app.get('/')
     async def index():return FileResponse(ROOT/'frontend/index.html')
     app.mount('/assets',StaticFiles(directory=ROOT/'frontend'),name='assets')
