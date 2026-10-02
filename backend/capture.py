@@ -191,6 +191,36 @@ def run_day(date, codes, kw):
     return {'date': date, 'rows': rows}
 
 
+def compare_day(date, codes, kw, eligible_only=False):
+    from .variants import NAMES
+    date = _date(date)
+    stocks = day(date)['stocks']
+    names = {x['code']: x['name'] for x in stocks}
+    if not codes:
+        codes = [x['code'] for x in stocks if x['eligible'] or not eligible_only]
+    rows = []
+    for c in codes:
+        f = f'{c}_{date}.json'
+        if not (pathlib.Path(S.DIR) / f).is_file():
+            continue
+        res, nm = {}, names.get(c, '')
+        for sn in NAMES:
+            p = dict(kw.get('params') or {})
+            p['strategy'] = sn
+            try:
+                x = S.load(f)
+                x['file'] = f
+                out = S.simulate(x, **dict(kw, params=p))
+                st = out.get('stats') or {}
+                nm = nm or out.get('name') or ''
+                res[sn] = {'entered': bool(st.get('entered')), 'pnl': st.get('model_pnl'), 'net': st.get('net'),
+                           'reason': st.get('reason') or st.get('exit_reason') or st.get('exitReason') or ''}
+            except Exception as e:
+                res[sn] = {'error': str(e)[:160]}
+        rows.append({'code': c, 'name': nm, 'res': res})
+    return {'date': date, 'strategies': NAMES, 'rows': rows}
+
+
 def register_capture(app):
     @app.get('/api/sim/capture-dates')
     async def _cap_dates():
@@ -212,3 +242,22 @@ def register_capture(app):
         kw = dict(size=d.get('size', 360), params=d.get('params'), slip=d.get('slip', 1),
                   cost_pct=d.get('cost', 0.25), capital=d.get('capital', 1_000_000))
         return await asyncio.to_thread(run_day, d.get('date'), codes, kw)
+
+    @app.get('/api/sim/strategies')
+    async def _cap_strategies():
+        from .variants import SPECS
+        return [{'name': k, 'label': v.label} for k, v in SPECS.items()]
+
+    @app.post('/api/sim/compare')
+    async def _cap_compare(request: Request):
+        try:
+            d = await request.json()
+        except Exception:
+            raise ValueError('올바른 JSON이 필요합니다.')
+        if not isinstance(d, dict):
+            raise ValueError('올바른 JSON이 필요합니다.')
+        g = lambda k, v: v if d.get(k) is None else d.get(k)
+        codes = [c for c in (_code(x) for x in (d.get('codes') or [])) if c]
+        kw = dict(size=g('size', 360), params=g('params', {}), slip=g('slip', 1),
+                  cost_pct=g('cost', 0.25), capital=g('capital', 1_000_000))
+        return await asyncio.to_thread(compare_day, d.get('date'), codes, kw, bool(d.get('eligible_only')))

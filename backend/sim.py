@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from .config import ROOT
 from .market import TickBars
 from .strategy import S43REngine,StrategyConfig,SOURCE_SHA256
+from .variants import engine_for
 DIR=ROOT/'ticks'
 SKIP=('target_date','utc_offset_minutes')
 def r(x):return None if x is None or not math.isfinite(float(x)) else round(float(x),4)
@@ -36,7 +37,7 @@ def config(date,params):
         kw[k]=(v is True or str(v).lower() in ('true','1','on')) if t is bool else str(v).replace(':','').zfill(4) if t is str else float(v)
     return StrategyConfig(target_date=date,**kw)
 def simulate(d,size=360,params=None,slip=1,cost_pct=0.25,capital=1_000_000):
-    date=str(d['date']);cfg=config(date,params);e=S43REngine(cfg);tb=TickBars(int(size))
+    date=str(d['date']);cfg=config(date,params);e=engine_for((params or {}).get('strategy'))(cfg);tb=TickBars(int(size))
     size=int(size);slip=int(slip);cost_pct=float(cost_pct);capital=float(capital)
     if not 10<=size<=3000:raise ValueError('틱 수는 10~3000')
     bars=[];fills=[];signals=[];queue=[];eq=[];st={'qty':0,'eq':0,'avg':0.0,'real':0.0,'t':0}
