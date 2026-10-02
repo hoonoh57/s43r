@@ -42,7 +42,11 @@ def _loose_tail(one_ticks,target,max_count=30):
             a=one_ticks[start];hi=max(hi,a['high']);lo=min(lo,a['low']);vol+=a['volume']
             if vol>target['volume']+1e-8:break
             if a['date']==target['date'] and abs(a['open']-target['open'])<1e-8 and abs(hi-target['high'])<1e-8 and abs(lo-target['low'])<1e-8 and abs(vol-target['volume'])<1e-8:found.append((start,end))
-    if len(found)!=1:return None
+    if len(found)!=1:
+        ft=target.get('full_time')
+        anchored=[(a,b) for a,b in found if ft and ft in (one_ticks[a].get('full_time'),one_ticks[b-1].get('full_time'))]
+        if len(anchored)!=1:return None
+        found=anchored
     a,b=found[0];return one_ticks[a:b]
 
 def _dump_tail(one_ticks,target,strict):
