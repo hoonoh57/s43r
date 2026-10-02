@@ -4,3 +4,4 @@
 .chk-row{display:flex;gap:3px;margin-top:3px;flex-wrap:wrap}
 .chk{font-size:10px;line-height:14px;padding:0 4px;border:1px solid #2a3a4c;border-radius:3px;color:#56697c}
 .chk.on{color:#5ddbd2;border-color:#2f6f6a;background:rgba(93,219,210,.08)}
+#positions-body td small{display:block;color:#677f95;font-size:11px;margin-top:2px}

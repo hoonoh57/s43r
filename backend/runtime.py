@@ -21,7 +21,7 @@ class Runtime:
         self.armed=False;self.entries=False;self.reconciled=False;self.problems=[];self.cash=0;self.cash_at=0.0;self.soft_streak=0;self.conditions=[];self.subscribed=False
         self.watch={};self.members=set();self.frozen=False;self.freeze_codes=set();self.subscription_time=None;self.snapshot_received=False
         self.tasks=set();self.replay_task=None;self.monitor_task=None;self.running=False;self.source='대기';self.progress=0;self.last_error='';self.unmatched=[]
-        self.warm_semaphore=asyncio.Semaphore(2);self.control_lock=asyncio.Lock();self.reconcile_lock=asyncio.Lock();self.feed_lock=asyncio.Lock();self.snapshot=None
+        self.names={};self.warm_semaphore=asyncio.Semaphore(2);self.control_lock=asyncio.Lock();self.reconcile_lock=asyncio.Lock();self.feed_lock=asyncio.Lock();self.snapshot=None
         if self.settings.mode=='replay':self.restore_replay_view()
     def save_replay_view(self):
         view={'date':self.date,'source':self.source,'progress':self.progress,'watch':[]}
@@ -53,7 +53,7 @@ class Runtime:
         return StrategyConfig(target_date=self.date,base_rate_pct=s.base_rate,hard_stop_pct=s.hard_stop,early_enabled=s.early_enabled,early_macd=s.early_macd)
     def add_watch(self,code,name=''):
         code=symbol(code)
-        if code not in self.watch:self.watch[code]={'code':code,'name':name or code,'engine':S43REngine(self.cfg()),'bars':[],'builder':None,'volume':0,'buffer':[],'ready':False,'eligible':False,'status':'시드 대기','quote':{},'lock':asyncio.Lock(),'intents':[],'last_received':0,'entry_blocked':False,'rewarm':0}
+        if code not in self.watch:self.watch[code]={'code':code,'name':name or self.names.get(code,code),'engine':S43REngine(self.cfg()),'bars':[],'builder':None,'volume':0,'buffer':[],'ready':False,'eligible':False,'status':'시드 대기','quote':{},'lock':asyncio.Lock(),'intents':[],'last_received':0,'entry_blocked':False,'rewarm':0}
         return self.watch[code]
     def configure(self,data):
         if self.connected or self.running or self.armed or self.ledger.pending():raise ValueError('실행/접속/미완료 주문 중에는 설정을 바꿀 수 없습니다.')
@@ -77,7 +77,7 @@ class Runtime:
             self.ledger=Ledger(self.store,f'ledger:{self.settings.mode}:{env}:{acct}:{self.date}')
             self.watch={};self.members=set();self.freeze_codes=set();self.frozen=False;self.subscribed=False;self.snapshot_received=False;self.conditions=[];self.unmatched=[]
             if save:self.vault.save(env,key,secret)
-            self.conditions=await broker.conditions();await self.reconcile(adopt=True)
+            self.conditions=await broker.conditions();await self.reconcile(adopt=True);self.task(self.load_names())
             self.source='키움 '+('모의' if env=='mock' else '실서버');self.event('connect',self.source+' 접속 · 계좌 '+self.masked_account())
         except Exception:
             self.connected=False;await broker.close();raise
@@ -118,10 +118,7 @@ class Runtime:
         async with self.warm_semaphore, w['lock']:
             try:
                 w['status']='30틱 / 1틱 경계 대조 중'
-                rows=await self.broker.pages('ka10079','/api/dostk/chart',{'stk_cd':code,'tic_scope':'30','upd_stkpc_tp':'0'},'stk_tic_chart_qry',self.settings.history_pages,stop=lambda rs:sum(str(r.get('cntr_tm',''))[:8]<self.date for r in rs)>=960)
-                ones=await self.broker.query('ka10079','/api/dostk/chart',{'stk_cd':code,'tic_scope':'1','upd_stkpc_tp':'0'})
-                thirty=[chart_bar(r) for r in reversed(rows)];one=[chart_bar(r) for r in reversed(ones.get('stk_tic_chart_qry',[]))]
-                bars,builder,vol=build_history(thirty,one,self.date)
+                bars,builder,vol=await self.fetch_seed(code)
                 w['engine']=S43REngine(self.cfg());w['bars']=[]
                 for b in bars:self.indicate(w,b)
                 w['builder']=builder;w['volume']=vol;w['ready']=True;w['status']='감시';self.sync(w)
@@ -135,10 +132,54 @@ class Runtime:
             except asyncio.CancelledError:raise
             except Exception as e:
                 failed=True;w['ready']=False;w['status']='시드 오류: '+str(e);self.event('warm',code+' '+w['status'],'warning')
+        await self.fetch_name(w)
         # Auto-rewarm path: after releasing the lock, back off, then re-isolate -> retry or escalate.
         if failed and w['rewarm']>0 and self.connected:
             await asyncio.sleep(min(5*w['rewarm'],15))
             if self.connected and not w['ready']:await self.fault(code+' 재시드 실패',scope='symbol',code=code)
+    async def fetch_seed(self,code):
+        """30틱/1틱 경계 대조. 장중에는 조회 사이 새 체결로 마지막 30틱 봉이 바뀔 수 있어 경계 불일치만 재조회한다."""
+        for attempt in range(3):
+            try:
+                rows=await self.broker.pages('ka10079','/api/dostk/chart',{'stk_cd':code,'tic_scope':'30','upd_stkpc_tp':'0'},'stk_tic_chart_qry',self.settings.history_pages,stop=lambda rs:sum(str(r.get('cntr_tm',''))[:8]<self.date for r in rs)>=960)
+                ones=await self.broker.query('ka10079','/api/dostk/chart',{'stk_cd':code,'tic_scope':'1','upd_stkpc_tp':'0'})
+                thirty=[chart_bar(r) for r in reversed(rows)];one=[chart_bar(r) for r in reversed(ones.get('stk_tic_chart_qry',[]))]
+                bars,builder,vol=build_history(thirty,one,self.date)
+                return bars,builder,vol
+            except ValueError as e:
+                if '마지막 30틱' not in str(e) or attempt==2:raise
+                self.event('warm',f'{code} 30틱 경계 재조회 {attempt+1}/2')
+                await asyncio.sleep(1.0+attempt)
+
+    async def fetch_name(self,w):
+        """화면 표시용 종목명(ka10001). 실패해도 운용에 영향 없음."""
+        if w['name']!=w['code'] or not self.broker:return
+        try:
+            d=await self.broker.query('ka10001','/api/dostk/stkinfo',{'stk_cd':w['code']})
+            n=str(d.get('stk_nm','')).strip()
+            if n:w['name']=n
+        except asyncio.CancelledError:raise
+        except Exception:pass
+
+    async def load_names(self):
+        """화면 표시용 종목명 일괄 조회(ka10099 코스피/코스닥, 거래일별 캐시). 실패해도 운용에 영향 없음."""
+        key='names:'+self.date;cache=dict(self.store.get(key) or {})
+        if not cache and self.broker:
+            for mk in ('0','10'):
+                try:rows=await self.broker.pages('ka10099','/api/dostk/stkinfo',{'mrkt_tp':mk},'list',max_pages=50)
+                except asyncio.CancelledError:raise
+                except Exception as e:self.event('system',f'종목명 목록 조회 실패(시장 {mk}): {e}','warning');continue
+                for r in rows:
+                    try:c=symbol(r.get('code',''))
+                    except ValueError:continue
+                    n=str(r.get('name','')).strip()
+                    if n:cache[c]=n
+            if cache:self.store.put(key,cache)
+        self.names.update(cache)
+        for c,w in self.watch.items():
+            if w['name']==c and c in self.names:w['name']=self.names[c]
+        if cache:self.event('system',f'종목명 {len(cache)}개 로드')
+
     def sync(self,w):
         e=w['engine'];p=self.ledger.positions.get(w['code'])
         if not p:
@@ -198,6 +239,7 @@ class Runtime:
                 if not w:continue
                 v={**v,'_received':obj.get('_received_at',time.time())}
                 if not w['ready']:
+                    if abs(number(v.get('10'))):w['quote']={'price':abs(number(v.get('10'))),'ask':abs(number(v.get('27'))),'bid':abs(number(v.get('28'))),'received':v['_received']}
                     w['buffer'].append(v)
                     if len(w['buffer'])>100000:
                         w['buffer']=[];w['status']='수신 버퍼 초과';await self.fault(c+' 시드 중 틱 버퍼 초과',scope='symbol',code=c)
@@ -485,11 +527,11 @@ class Runtime:
     def state(self):
         positions=[]
         for code,p in self.ledger.positions.items():
-            last=self.watch.get(code,{}).get('quote',{}).get('price',p['avg']);positions.append({**p,'last':last,'unrealized':(last-p['avg'])*p['qty']})
+            last=self.watch.get(code,{}).get('quote',{}).get('price',p['avg']);positions.append({**p,'name':p.get('name') or self.names.get(code,code),'last':last,'unrealized':(last-p['avg'])*p['qty']})
         watch=[]
         for code,w in self.watch.items():
             e=w['engine'];v=e.values[-1] if e.values else {};q=w['quote'];price=q.get('price',0)
-            watch.append({'code':code,'name':w['name'],'price':price,'baseline':e.base_price,'capture':e.capture_price,'change':(price/e.capture_price-1)*100 if e.capture_price and price else 0,'macd':v.get('macd'),'cum':v.get('cum'),'eligible':w['eligible'],'ready':w['ready'],'status':w['status'],'ticks':w['builder'].count if w['builder'] else None,**self.diagnose(w)})
+            watch.append({'code':code,'name':w['name'] if w['name']!=code else self.names.get(code,code),'bars_n':len(w['bars']),'price':price,'baseline':e.base_price,'capture':e.capture_price,'change':(price/e.capture_price-1)*100 if e.capture_price and price else 0,'macd':v.get('macd'),'cum':v.get('cum'),'eligible':w['eligible'],'ready':w['ready'],'status':w['status'],'ticks':w['builder'].count if w['builder'] else None,**self.diagnose(w)})
         return {'settings':self.settings.model_dump(),'date':self.date,'connected':self.connected,'account':self.masked_account(),'account_suffix':self.account[-4:] if self.account else '', 'conditions':self.conditions,'subscribed':self.subscribed,'frozen':self.frozen,'universe_count':len(self.freeze_codes),'armed':self.armed,'entries':self.entries,'reconciled':self.reconciled,'problems':self.problems,'source':self.source,'running':self.running,'progress':self.progress,'cash':self.cash,'realized':self.ledger.data['realized'],'pnl':self.pnl_total(),'positions':positions,'orders':self.ledger.orders[-100:][::-1],'fills':self.ledger.data['fills'][-100:][::-1],'watch':watch,'events':self.store.events(),'error':self.last_error,'saved_credentials':self.vault.exists(self.settings.connection),'strategy':asdict(self.cfg())}
     def chart(self,code):
         w=self.watch.get(code)
