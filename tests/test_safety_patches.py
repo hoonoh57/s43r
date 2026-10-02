@@ -55,3 +55,43 @@ def test_fault_scopes(tmp_path):
         assert not rt.armed
     finally:
         rt.store.close()
+
+def test_rewarm_failure_retries_then_escalates(tmp_path):
+    async def run():
+        import backend.runtime as R
+        rt = Runtime(tmp_path)
+        w = rt.add_watch('005930')
+        rt.connected = True
+        rt.armed = rt.entries = True
+        rt.ledger.positions['005930'] = {'code': '005930', 'qty': 10, 'entry_qty': 10, 'entry_amount': 100000.0,
+                                         'avg': 10000.0, 'realized': 0.0, 'stages': {}, 'entered': True,
+                                         'closed': False, 'entry_time': None, 'high': 0.0}
+
+        class Broken:
+            async def pages(self, *a, **k):
+                raise RuntimeError('boom')
+
+            async def close(self):
+                pass
+
+        rt.broker = Broken()
+        orig = asyncio.sleep
+
+        async def fast(_):
+            await orig(0)
+
+        R.asyncio.sleep = fast
+        try:
+            await rt.fault('gap', scope='symbol', code='005930')
+            for _ in range(300):
+                await orig(0)
+                if not rt.entries:
+                    break
+            assert w['rewarm'] == R.MAX_REWARM
+            assert rt.armed and not rt.entries
+        finally:
+            R.asyncio.sleep = orig
+            rt.connected = False
+            await rt.stop()
+
+    asyncio.run(run())

@@ -114,7 +114,7 @@ class Runtime:
         # Distinct groups avoid dropping subscription to existing position symbols.
         for i in range(0,len(codes),50):await self.broker.register(codes[i:i+50],group=str(100+i//50))
     async def warm(self,code):
-        w=self.watch[code]
+        w=self.watch[code];failed=False
         async with self.warm_semaphore, w['lock']:
             try:
                 w['status']='30틱 / 1틱 경계 대조 중'
@@ -131,10 +131,11 @@ class Runtime:
                 self.event('warm',code+' 360틱 시드 준비 완료 · '+str(len(bars))+'봉')
             except asyncio.CancelledError:raise
             except Exception as e:
-                w['ready']=False;w['status']='시드 오류: '+str(e);self.event('warm',code+' '+w['status'],'warning')
-                p=self.ledger.positions.get(code)
-                if p and p['qty']>0 and w['rewarm']>=MAX_REWARM:
-                    await self.fault(code+' 보유 종목 재시드 반복 실패 · 수동 청산 확인 필요',scope='entries')
+                failed=True;w['ready']=False;w['status']='시드 오류: '+str(e);self.event('warm',code+' '+w['status'],'warning')
+        # Auto-rewarm path: after releasing the lock, back off, then re-isolate -> retry or escalate.
+        if failed and w['rewarm']>0 and self.connected:
+            await asyncio.sleep(min(5*w['rewarm'],15))
+            if self.connected and not w['ready']:await self.fault(code+' 재시드 실패',scope='symbol',code=code)
     def sync(self,w):
         e=w['engine'];p=self.ledger.positions.get(w['code'])
         if not p:

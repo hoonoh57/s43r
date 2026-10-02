@@ -189,12 +189,24 @@ def test_same_trnm_timeout_cannot_consume_late_response():
         await b.close()
     asyncio.run(run())
 
-def test_cumulative_volume_gap_stops_orders(tmp_path):
+def test_cumulative_volume_gap_isolates_symbol(tmp_path):
     async def run():
         rt=Runtime(tmp_path);w=rt.add_watch('005930');w.update(ready=True,builder=TickBars(),volume=100)
         rt.armed=rt.entries=True
         await rt.tick(w,{'20':'090501','10':'10000','15':'5','13':'111','290':'2','_received':time.time()})
-        assert not w['ready'];assert not rt.armed;assert not rt.ledger.orders
+        assert not w['ready'];assert w['entry_blocked']
+        assert rt.armed and rt.entries
+        assert not rt.ledger.orders
+        await rt.stop()
+    asyncio.run(run())
+
+def test_gap_on_held_symbol_escalates_to_entries(tmp_path):
+    async def run():
+        rt=Runtime(tmp_path);w=rt.add_watch('005930');w.update(ready=True,builder=TickBars(),volume=100)
+        rt.ledger.positions['005930']={'code':'005930','qty':10,'entry_qty':10,'entry_amount':100000.0,'avg':10000.0,'realized':0.0,'stages':{},'entered':True,'closed':False,'entry_time':None,'high':0.0}
+        rt.armed=rt.entries=True
+        await rt.tick(w,{'20':'090501','10':'10000','15':'5','13':'111','290':'2','_received':time.time()})
+        assert rt.armed and not rt.entries
         await rt.stop()
     asyncio.run(run())
 
