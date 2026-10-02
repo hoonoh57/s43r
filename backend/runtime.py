@@ -114,7 +114,7 @@ class Runtime:
         # Distinct groups avoid dropping subscription to existing position symbols.
         for i in range(0,len(codes),50):await self.broker.register(codes[i:i+50],group=str(100+i//50))
     async def warm(self,code):
-        w=self.watch[code];failed=False
+        w=self.watch[code];failed=False;started=time.monotonic()
         async with self.warm_semaphore, w['lock']:
             try:
                 w['status']='30틱 / 1틱 경계 대조 중'
@@ -128,7 +128,10 @@ class Runtime:
                 queued=w['buffer'];w['buffer']=[]
                 # Warmup is read-only. Buffered old signals must never become orders.
                 for v in queued:await self.tick(w,v,allow=False)
-                self.event('warm',code+' 360틱 시드 준비 완료 · '+str(len(bars))+'봉')
+                took=time.monotonic()-started
+                self.event('warm',code+' 360틱 시드 준비 완료 · '+str(len(bars))+'봉 · '+f'{took:.1f}초')
+                if w['eligible'] and now().strftime('%H%M')>=w['engine'].config.entry_start:
+                    self.event('warm',code+' 09:04 진입 구간 시작 후 시드 완료 · 그 전 신호는 주문하지 않았습니다.','warning')
             except asyncio.CancelledError:raise
             except Exception as e:
                 failed=True;w['ready']=False;w['status']='시드 오류: '+str(e);self.event('warm',code+' '+w['status'],'warning')
@@ -181,8 +184,11 @@ class Runtime:
                 try:c=symbol(v.get('9001',row.get('item','')))
                 except ValueError:continue
                 if str(v.get('843'))=='I':
-                    self.members.add(c)
-                    if c not in self.watch and len(self.watch)<100:
+                    new=c not in self.members;self.members.add(c)
+                    if self.frozen and self.settings.mode!='replay':
+                        # 09:03 이후 편입은 진입 대상이 아니므로 시드/틱 등록 없이 기록만 한다(장 초반 REST 부하 절감).
+                        if new and c not in self.watch:self.event('universe',c+' 09:03 이후 편입 · 진입 대상 아님(기록만)')
+                    elif c not in self.watch and len(self.watch)<100:
                         self.add_watch(c);await self.register_ticks();self.task(self.warm(c))
                 elif str(v.get('843'))=='D':self.members.discard(c)
             elif typ=='0B':
@@ -426,6 +432,30 @@ class Runtime:
                 self.ledger.save()
             except asyncio.CancelledError:raise
             except Exception as e:await self.fault('감시 오류: '+str(e))
+    def diagnose(self,w):
+        """화면 표시 전용: 현재 단계와 마지막 완료 봉 기준 진입 조건 충족 여부. 주문 판단에는 사용하지 않는다."""
+        e=w['engine'];cfg=e.config;v=e.values[-1] if e.values else {};bar=w['bars'][-1] if w['bars'] else None
+        today=bar if bar and str(bar.get('date'))==self.date else None;tm=str(today['time']) if today else ''
+        close=float(today['close']) if today else 0.0;price=w['quote'].get('price') or close
+        checks={}
+        if v:
+            macd=v.get('macd') or 0;cum=v.get('cum') or 0
+            checks={'trend':v.get('trend')==1,'macd':macd>=cfg.macd_threshold,'jma':bool(e.prev_jma>e.prev_prev_jma),'cum':cum>=cfg.min_cum_eok,'base':bool(e.base_price) and close>=e.base_price}
+            checks['early']=bool(cfg.early_enabled and checks['trend'] and checks['macd'] and checks['jma'] and tm and tm<=cfg.early_until and cum>=cfg.early_cum_eok and macd>=cfg.early_macd)
+        gap=(e.base_price/price-1)*100 if e.base_price and price else None
+        ok=bool(checks) and checks['trend'] and checks['macd'] and checks['jma'] and checks['cum'] and (checks['base'] or checks['early'])
+        p=self.ledger.positions.get(w['code'])
+        if p and p['qty']>0:stage='보유 중'
+        elif p and p.get('closed'):stage='청산 완료'
+        elif w.get('entry_blocked'):stage='진입 제외 · 시세 단절'
+        elif not w['ready']:stage=w['status']
+        elif self.settings.mode!='replay' and not self.frozen:stage='포착 · 09:03 동결 대기'
+        elif not w['eligible']:stage='관찰 · 진입 대상 아님'
+        elif not tm or tm<cfg.entry_start:stage='진입 대기 · 09:04부터'
+        elif tm>cfg.entry_cutoff:stage='진입 시간 종료'
+        elif ok:stage='진입 조건 충족'
+        else:stage='조건 대기'
+        return {'stage':stage,'checks':checks,'gap':gap,'bar_time':tm}
     def state(self):
         positions=[]
         for code,p in self.ledger.positions.items():
@@ -433,7 +463,7 @@ class Runtime:
         watch=[]
         for code,w in self.watch.items():
             e=w['engine'];v=e.values[-1] if e.values else {};q=w['quote'];price=q.get('price',0)
-            watch.append({'code':code,'name':w['name'],'price':price,'baseline':e.base_price,'capture':e.capture_price,'change':(price/e.capture_price-1)*100 if e.capture_price and price else 0,'macd':v.get('macd'),'cum':v.get('cum'),'eligible':w['eligible'],'ready':w['ready'],'status':w['status'],'ticks':w['builder'].count if w['builder'] else None})
+            watch.append({'code':code,'name':w['name'],'price':price,'baseline':e.base_price,'capture':e.capture_price,'change':(price/e.capture_price-1)*100 if e.capture_price and price else 0,'macd':v.get('macd'),'cum':v.get('cum'),'eligible':w['eligible'],'ready':w['ready'],'status':w['status'],'ticks':w['builder'].count if w['builder'] else None,**self.diagnose(w)})
         return {'settings':self.settings.model_dump(),'date':self.date,'connected':self.connected,'account':self.masked_account(),'account_suffix':self.account[-4:] if self.account else '', 'conditions':self.conditions,'subscribed':self.subscribed,'frozen':self.frozen,'universe_count':len(self.freeze_codes),'armed':self.armed,'entries':self.entries,'reconciled':self.reconciled,'problems':self.problems,'source':self.source,'running':self.running,'progress':self.progress,'cash':self.cash,'realized':self.ledger.data['realized'],'pnl':self.pnl_total(),'positions':positions,'orders':self.ledger.orders[-100:][::-1],'fills':self.ledger.data['fills'][-100:][::-1],'watch':watch,'events':self.store.events(),'error':self.last_error,'saved_credentials':self.vault.exists(self.settings.connection),'strategy':asdict(self.cfg())}
     def chart(self,code):
         w=self.watch.get(code)
