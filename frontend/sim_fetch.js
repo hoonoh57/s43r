@@ -8,7 +8,13 @@ const $=s=>document.querySelector(s);
 const ymd=d=>d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
 function lastBiz(){const d=new Date();if(d.getHours()<20)d.setDate(d.getDate()-1);while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);return ymd(d)}
 function say(t,c){const m=$('#cybMsg');m.textContent=t;m.className='msg '+(c||'')}
-async function j(url,opt){const r=await fetch(url,opt);let b=null;try{b=await r.json()}catch(e){}
+let TOKEN=null;
+async function tok(force){if(force||!TOKEN){const r=await fetch('/api/bootstrap',{cache:'no-store'});TOKEN=(await r.json()).token}return TOKEN}
+async function send(url,opt){opt=Object.assign({},opt||{});const m=(opt.method||'GET').toUpperCase();
+  if(m==='GET'||m==='HEAD')return fetch(url,opt);
+  for(let i=0;i<2;i++){opt.headers=Object.assign({},opt.headers||{},{'x-session':await tok(i>0)});
+    const r=await fetch(url,opt);if(r.status!==403||i)return r}}
+async function j(url,opt){const r=await send(url,opt);let b=null;try{b=await r.json()}catch(e){}
   if(!r.ok)throw new Error((b&&b.detail)||('HTTP '+r.status));return b}
 async function probe(){say('점검 중…');try{const r=await j('/api/sim/cybos/probe');const bad=[];
   if(!r.exists)bad.push('32비트 파이썬 없음: '+r.py32);
