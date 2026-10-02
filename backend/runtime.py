@@ -11,11 +11,14 @@ from .broker import Kiwoom,BrokerError,OrderUnknown
 from .execution import Ledger,ACTIVE,oid
 
 POSITION_FIELDS=('entered','closed','entry_price','runner_high','entry_timestamp','exit_timestamp','entry_time','reason','pnl','p1','p2')
+MAX_REWARM=3
+MAX_EXIT_RETRIES=3
+SETTLE_SEC=10.0
 class Runtime:
     def __init__(self,folder):
         self.folder=Path(folder);self.store=Store(folder);self.settings_file=SettingsFile(folder);self.settings=self.settings_file.load();self.vault=Vault(folder)
         self.date=now().strftime('%Y%m%d');self.ledger=Ledger(self.store,'replay:last' if self.settings.mode=='replay' else 'disconnected:'+self.settings.mode);self.broker=None;self.account='';self.connected=False
-        self.armed=False;self.entries=False;self.reconciled=False;self.problems=[];self.cash=0;self.conditions=[];self.subscribed=False
+        self.armed=False;self.entries=False;self.reconciled=False;self.problems=[];self.cash=0;self.cash_at=0.0;self.soft_streak=0;self.conditions=[];self.subscribed=False
         self.watch={};self.members=set();self.frozen=False;self.freeze_codes=set();self.subscription_time=None;self.snapshot_received=False
         self.tasks=set();self.replay_task=None;self.monitor_task=None;self.running=False;self.source='대기';self.progress=0;self.last_error='';self.unmatched=[]
         self.warm_semaphore=asyncio.Semaphore(2);self.control_lock=asyncio.Lock();self.reconcile_lock=asyncio.Lock();self.feed_lock=asyncio.Lock();self.snapshot=None
@@ -50,7 +53,7 @@ class Runtime:
         return StrategyConfig(target_date=self.date,base_rate_pct=s.base_rate,hard_stop_pct=s.hard_stop,early_enabled=s.early_enabled,early_macd=s.early_macd)
     def add_watch(self,code,name=''):
         code=symbol(code)
-        if code not in self.watch:self.watch[code]={'code':code,'name':name or code,'engine':S43REngine(self.cfg()),'bars':[],'builder':None,'volume':0,'buffer':[],'ready':False,'eligible':False,'status':'시드 대기','quote':{},'lock':asyncio.Lock(),'intents':[],'last_received':0}
+        if code not in self.watch:self.watch[code]={'code':code,'name':name or code,'engine':S43REngine(self.cfg()),'bars':[],'builder':None,'volume':0,'buffer':[],'ready':False,'eligible':False,'status':'시드 대기','quote':{},'lock':asyncio.Lock(),'intents':[],'last_received':0,'entry_blocked':False,'rewarm':0}
         return self.watch[code]
     def configure(self,data):
         if self.connected or self.running or self.armed or self.ledger.pending():raise ValueError('실행/접속/미완료 주문 중에는 설정을 바꿀 수 없습니다.')
@@ -129,6 +132,9 @@ class Runtime:
             except asyncio.CancelledError:raise
             except Exception as e:
                 w['ready']=False;w['status']='시드 오류: '+str(e);self.event('warm',code+' '+w['status'],'warning')
+                p=self.ledger.positions.get(code)
+                if p and p['qty']>0 and w['rewarm']>=MAX_REWARM:
+                    await self.fault(code+' 보유 종목 재시드 반복 실패 · 수동 청산 확인 필요',scope='entries')
     def sync(self,w):
         e=w['engine'];p=self.ledger.positions.get(w['code'])
         if not p:
@@ -186,7 +192,8 @@ class Runtime:
                 v={**v,'_received':obj.get('_received_at',time.time())}
                 if not w['ready']:
                     w['buffer'].append(v)
-                    if len(w['buffer'])>100000:w['buffer']=[];w['status']='수신 버퍼 초과';await self.fault('시드 중 틱 버퍼 초과')
+                    if len(w['buffer'])>100000:
+                        w['buffer']=[];w['status']='수신 버퍼 초과';await self.fault(c+' 시드 중 틱 버퍼 초과',scope='symbol',code=c)
                 else:
                     async with w['lock']:await self.tick(w,v)
     async def tick(self,w,v,allow=True):
@@ -195,7 +202,7 @@ class Runtime:
         if len(tm)!=6 or not tm.isdigit() or not price or not qty:return
         if cum<=w['volume']:return
         if abs(cum-w['volume']-qty)>1e-6:
-            w['ready']=False;w['status']='틱 누락 감지 · 재시드 필요';await self.fault(w['code']+' 누적 거래량 단절');return
+            w['ready']=False;w['status']='틱 누락 감지 · 재시드 필요';await self.fault(w['code']+' 누적 거래량 단절',scope='symbol',code=w['code']);return
         w['volume']=cum;w['last_received']=v['_received'];w['quote']={'price':price,'ask':abs(number(v.get('27'))),'bid':abs(number(v.get('28'))),'received':v['_received']}
         bar=w['builder'].tick(self.date,tm,price,qty)
         if bar:
@@ -216,24 +223,29 @@ class Runtime:
         await self.drain(w)
     async def drain(self,w):
         while self.armed and w['intents'] and not self.ledger.pending(w['code']):
+            if w['intents'][0].get('not_before',0)>time.time():break
             sig=w['intents'].pop(0)
             try:await self.send(w,sig)
             except ValueError as e:self.event('risk',w['code']+' '+str(e),'warning');break
     def risk_price(self,w,side,signal_price,replay=False):
         q=w['quote'];s=self.settings
         if replay:return float(signal_price)
+        if side=='sell':
+            if not q or time.time()-q.get('received',0)>s.quote_age_ms/1000:
+                self.event('risk',w['code']+' 시세 지연 상태에서 청산 시장가 전송','warning')
+                return float(q.get('bid') or q.get('price') or signal_price)
+            return float(q.get('bid') or q.get('price') or signal_price)
         if not q or time.time()-q.get('received',0)>s.quote_age_ms/1000:raise ValueError('시세 지연으로 주문 보류')
         ask,bid=q.get('ask',0),q.get('bid',0)
         if not ask or not bid or ask<bid:raise ValueError('유효한 매수/매도 호가가 없습니다.')
-        if side=='buy':
-            if (ask-bid)/bid*10000>s.max_spread_bps:raise ValueError('호가 스프레드 한도 초과')
-            if ask>signal_price*(1+s.max_chase_bps/10000):raise ValueError('신호가 대비 추격 한도 초과')
-        return ask if side=='buy' else bid
+        if (ask-bid)/bid*10000>s.max_spread_bps:raise ValueError('호가 스프레드 한도 초과')
+        if ask>signal_price*(1+s.max_chase_bps/10000):raise ValueError('신호가 대비 추격 한도 초과')
+        return ask
     async def send(self,w,sig):
         s=self.settings;replay=s.mode=='replay';code=w['code'];side='buy' if sig['kind']=='entry' else 'sell'
         if self.ledger.pending(code):return
         p=self.ledger.positions.get(code)
-        if side=='buy' and p and p['entered']:return
+        if side=='buy' and (w.get('entry_blocked') or (p and p['entered'])):return
         if side=='sell' and (not p or p['qty']<=0):return
         try:price=self.risk_price(w,side,sig['price'],replay)
         except ValueError as e:self.event('risk',code+' '+str(e),'warning');return
@@ -245,7 +257,7 @@ class Runtime:
             if len(held)+sum(o['side']=='buy' for o in pending)>=s.max_positions:return
             exposure=sum(p['qty']*p['avg'] for p in held)+sum((o['qty']-o['filled'])*o['price'] for o in pending if o['side']=='buy')
             budget=min(s.allocation,s.max_exposure-exposure)
-            if s.broker_mode():budget=min(budget,max(0,self.cash-sum((o['qty']-o['filled'])*o['price'] for o in pending if o['side']=='buy'))*.99)
+            if s.broker_mode():budget=min(budget,max(0,self.available_cash())*.99)
             qty=int(budget//(price*(1+s.cost_pct/200)))
         else:
             if sig['kind']=='partial':
@@ -253,33 +265,69 @@ class Runtime:
                 qty=min(p['qty'],max(0,int(p['entry_qty']*.3)-done))
             else:qty=p['qty']
         if qty<=0:return
-        sid=f'{self.date}:{code}:{sig["time"]}:{sig["kind"]}:{sig["reason"]}'
+        sid=f'{self.date}:{code}:{sig["time"]}:{sig["kind"]}:{sig["reason"]}' + (f'#r{sig["retries"]}' if sig.get('retries') else '')
         if any(o['signal_id']==sid for o in self.ledger.orders):return
-        # Buy is marketable limit at observed ask; exit is market order to avoid an unfilled stop limit.
         o=self.ledger.create(code,side,qty,price,sig['reason'],sid,stage,sig['time'])
         if s.broker_mode():
+            deadline=w['quote'].get('received',0)+s.quote_age_ms/1000 if side=='buy' else None
             try:
-                broker_id=await self.broker.submit(side,code,qty,price if side=='buy' else 0,deadline=w['quote']['received']+s.quote_age_ms/1000)
+                broker_id=await self.broker.submit(side,code,qty,price if side=='buy' else 0,deadline=deadline)
                 self.ledger.ack(o,broker_id)
                 for v in self.unmatched[:]:
                     if self.ledger.execution(v,self.account):self.unmatched.remove(v)
-                self.reconciled=False
             except OrderUnknown as e:self.ledger.status(o,'UNKNOWN');await self.fault(str(e))
-            except BrokerError as e:self.ledger.status(o,'REJECTED');self.event('order',str(e),'warning')
+            except BrokerError as e:
+                self.ledger.status(o,'REJECTED');self.event('order',code+' '+str(e),'warning')
+                if side=='sell':self.retry_exit(w,sig)
             except Exception:self.ledger.status(o,'UNKNOWN');await self.fault('주문 처리 중 예외 · 결과 확인 필요')
         else:self.ledger.paper_fill(o,price,s.cost_pct)
         self.sync(w);self.event('order',f'{code} {"매수" if side=="buy" else "매도"} {qty}주 · {sig["reason"]} · {o["status"]}')
     def pnl_total(self):
         return self.ledger.data['realized']+sum((self.watch.get(c,{}).get('quote',{}).get('price',p['avg'])-p['avg'])*p['qty'] for c,p in self.ledger.positions.items())
-    async def fault(self,message):self.armed=self.entries=False;self.reconciled=False;self.last_error=message;self.event('error',message,'error')
+    async def fault(self,message,scope='entries',code=None):
+        """scope
+        - 'symbol' : 해당 종목만 격리(그 종목 신규 진입 금지 + 자동 재시드). 다른 종목은 정상 운용.
+        - 'entries': 전체 신규 진입 중지. armed는 유지하여 보유분 전략 청산은 계속.
+        - 'all'    : 모든 자동 주문 중지(거래일 변경 등 진짜 치명적 상황만).
+        """
+        self.last_error=message;self.event('error',f'[{scope}] {message}','error')
+        if scope=='symbol':
+            w=self.watch.get(code)
+            if w is None:scope='entries'
+            else:
+                w['entry_blocked']=True
+                if self.connected and w['rewarm']<MAX_REWARM:
+                    w['rewarm']+=1;w['status']=f'시세 단절 · 자동 재시드 {w["rewarm"]}/{MAX_REWARM}'
+                    self.task(self.warm(code));return
+                p=self.ledger.positions.get(code)
+                if not (p and p['qty']>0):w['status']='시세 단절 · 당일 제외';return
+                scope='entries';self.last_error=code+' 보유 종목 시세 복구 실패 · 이 종목은 청산 감시 불가, 수동 확인 필요';self.event('error',self.last_error,'error')
+        self.entries=False;self.reconciled=False
+        if scope=='all':self.armed=False
     async def reconcile(self):
         if not self.connected:raise ValueError('키움 접속이 필요합니다.')
         async with self.reconcile_lock:
-            snap=await self.broker.account_snapshot();self.snapshot=snap;self.cash=snap['cash']
-            self.problems=self.ledger.reconcile(snap) if self.settings.broker_mode() else []
+            started=time.time()
+            snap=await self.broker.account_snapshot();self.snapshot=snap;self.cash=snap['cash'];self.cash_at=started
+            hard,soft=self.ledger.reconcile_detail(snap,SETTLE_SEC) if self.settings.broker_mode() else ([],[])
+            self.problems=hard+soft
+            self.soft_streak=self.soft_streak+1 if soft else 0
             self.reconciled=not self.problems
-            if self.problems and self.armed:await self.fault(' / '.join(self.problems))
+            if self.armed and (hard or self.soft_streak>=2):
+                await self.fault(' / '.join(self.problems),scope='entries')
             return self.problems
+    def available_cash(self):
+        """스냅샷 현금 - 미체결 매수 - 스냅샷 전후 매수 체결. 이중 차감을 허용하는 보수적 계산."""
+        pend=sum((o['qty']-o['filled'])*o['price'] for o in self.ledger.pending() if o['side']=='buy')
+        spent=sum(f['qty']*f['price'] for f in self.ledger.data['fills'] if f['side']=='buy' and f['time']>=self.cash_at-SETTLE_SEC)
+        return self.cash-pend-spent
+    def retry_exit(self,w,sig):
+        n=sig.get('retries',0)+1
+        if n>MAX_EXIT_RETRIES:
+            self.last_error=f"{w['code']} 청산 {n-1}회 재시도 실패 · 수동 청산 필요";self.event('risk',self.last_error,'error');return
+        retry={**sig,'retries':n,'not_before':time.time()+min(2**n,10)}
+        if sig['kind']=='exit':w['intents']=[retry]
+        else:w['intents'].insert(0,retry)
     async def control(self,action,confirmation=''):
         if action=='arm':
             if not self.connected or not self.subscribed:raise ValueError('접속 후 조건식을 구독하세요.')
@@ -365,7 +413,7 @@ class Runtime:
                 await asyncio.sleep(1);self.store.flush()
                 if self.connected:
                     if now().strftime('%Y%m%d')!=self.date:
-                        await self.fault('거래일 변경 · 재접속 후 새로운 거래일을 시작하세요.');await self.disconnect();continue
+                        await self.fault('거래일 변경 · 재접속 후 새로운 거래일을 시작하세요.',scope='all');await self.disconnect();continue
                     self.freeze_due()
                     if time.time()-last_reconcile>15:
                         last_reconcile=time.time();await self.reconcile()

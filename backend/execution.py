@@ -80,11 +80,15 @@ class Ledger:
             self.fill(o,qty,abs(number(values['903'])),str(values.get('909','')),number(values.get('938'))+number(values.get('939')))
         if status=='거부':self.status(o,'REJECTED')
         return True
-    def reconcile(self,snapshot):
-        """Observe discrepancy, never claim manual/external positions as app-owned."""
+    def reconcile_detail(self,snapshot,settle_sec=10.0):
+        """(hard, soft) 반환. soft는 체결 통지와 잔고 조회의 도착 시차로 잠시 생길 수 있는 불일치."""
+        now_ts=time.time()
+        unsettled={o['code'] for o in self.pending()}|{f['code'] for f in self.data['fills'] if now_ts-f['time']<settle_sec}
         actual={symbol(r['stk_cd']):int(number(r.get('rmnd_qty'))) for r in snapshot['holdings'] if number(r.get('rmnd_qty'))>0}
-        own={c:p['qty'] for c,p in self.positions.items() if p['qty']>0};problems=[]
-        if actual!=own:problems.append('증권사 잔고와 앱 소유 잔고가 다릅니다 (수동/외부 보유 포함).')
+        own={c:p['qty'] for c,p in self.positions.items() if p['qty']>0}
+        hard=[];soft=[]
+        diff=sorted(c for c in set(actual)|set(own) if actual.get(c,0)!=own.get(c,0) and c not in unsettled)
+        if diff:soft.append('증권사 잔고와 앱 소유 잔고가 다릅니다 ('+', '.join(diff)+')')
         external=[];broker_open={}
         for r in snapshot['open_orders']:
             if number(r.get('oso_qty'))<=0:continue
@@ -92,9 +96,13 @@ class Ledger:
             o=next((o for o in self.orders if o['broker_id'] and oid(o['broker_id'])==oid(r['ord_no'])),None)
             if not o:external.append(r['ord_no']);continue
             cum=int(number(r['ord_qty']))-int(number(r['oso_qty']))
-            if cum!=o['filled']:problems.append('누락 체결이 있습니다. 체결 이벤트/기록 확인이 필요합니다.')
-        if external:problems.append('앱 외부 미체결 주문이 있습니다.')
+            if cum!=o['filled']:soft.append('누락 체결 의심 ('+o['code']+')')
+        if external:hard.append('앱 외부 미체결 주문이 있습니다.')
         for o in self.pending():
-            if o['status']=='UNKNOWN':problems.append('결과가 불명확한 주문이 있습니다.')
-            elif o['broker_id'] and oid(o['broker_id']) not in broker_open and time.time()-o['created']>10:problems.append('주문 종료 상태를 확인하지 못했습니다.')
-        return list(dict.fromkeys(problems))
+            if o['status']=='UNKNOWN':hard.append('결과가 불명확한 주문이 있습니다.')
+            elif o['broker_id'] and oid(o['broker_id']) not in broker_open and now_ts-o['created']>max(10,settle_sec):soft.append('주문 종료 상태를 확인하지 못했습니다.')
+        return list(dict.fromkeys(hard)),list(dict.fromkeys(soft))
+    def reconcile(self,snapshot):
+        """기존 호환: 시차 유예 없이 모든 문제를 반환(자동매매 시작 전 엄격 검사용)."""
+        hard,soft=self.reconcile_detail(snapshot,settle_sec=0)
+        return hard+soft
