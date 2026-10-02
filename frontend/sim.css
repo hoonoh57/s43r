@@ -1,0 +1,12 @@
+body{margin:0;background:#070d17;color:#cbd5e1;font:13px system-ui,"Malgun Gothic";height:100vh;display:flex;flex-direction:column}
+header{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid #1e293b}
+input,select,button{background:#0b1520;color:#d6e2ee;border:1px solid #223142;border-radius:6px;padding:4px 8px}
+input{width:70px}button{cursor:pointer}button.pri{background:#0f766e;border-color:#0f766e;color:#fff}
+#main{flex:1;display:flex;min-height:0}#left{flex:1;display:flex;flex-direction:column;min-width:0}
+#chart{flex:1;min-height:300px}#ctrl{display:flex;gap:6px;align-items:center;padding:6px 10px;border-top:1px solid #1e293b}
+#pos{flex:1;width:auto}#warn{color:#f59e0b;padding:0 10px 6px}#msg{color:#2dd4bf}
+aside{width:400px;overflow:auto;border-left:1px solid #1e293b;padding:6px 12px}h3{font-size:12px;color:#7dd3fc;margin:12px 0 4px}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{padding:3px 4px;border-bottom:1px solid #132033;text-align:right}td:first-child,th:first-child{text-align:left}
+#params{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px}#params label{display:flex;justify-content:space-between;align-items:center;gap:4px;font-size:12px}
+.pos{color:#ef4444}.neg{color:#3b82f6}#stats div{display:flex;justify-content:space-between}
+/* END sim.css */

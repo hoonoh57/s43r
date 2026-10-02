@@ -8,6 +8,7 @@ from .config import ROOT
 from .runtime import Runtime
 from .extras import TradeRuntime,register
 from .broker import BrokerError
+from .sim import register_sim
 from .desk_ops import register_ops
 
 class SingleInstance:
@@ -115,6 +116,7 @@ def create_app(folder=None):
         return Response(json.dumps({'schema':'s43r-trader-report-v1',**s},ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="s43r-report-{s["date"]}.json"'})
     register(app,body)
     register_ops(app)
+    register_sim(app)
     @app.get('/')
     async def index():return FileResponse(ROOT/'frontend/index.html')
     app.mount('/assets',StaticFiles(directory=ROOT/'frontend'),name='assets')

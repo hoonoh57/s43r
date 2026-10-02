@@ -23,3 +23,4 @@ config/
 tools/verify_baseline.py
 tools/verify_parity.py
 seed_debug/
+ticks/
