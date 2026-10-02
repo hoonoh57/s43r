@@ -1,0 +1,21 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>S4.3-R 차트·매매</title>
+<link rel="stylesheet" href="/assets/chart.css"></head><body>
+<div id="bar">
+<select id="code"></select>
+<select id="tf">
+<option value="s360">전략 360틱</option>
+<optgroup label="틱 (키움 조회)"><option value="t1">1틱</option><option value="t3">3틱</option><option value="t5">5틱</option><option value="t10">10틱</option><option value="t30">30틱</option><option value="t120">120틱</option><option value="t360">360틱</option></optgroup>
+<optgroup label="분/일"><option value="m1">1분</option><option value="m3">3분</option><option value="m5">5분</option><option value="m10">10분</option><option value="m15">15분</option><option value="m30">30분</option><option value="m60">60분</option><option value="d">일봉</option></optgroup>
+</select>
+<label>매매 <select id="mode"><option value="auto">자동</option><option value="semi">반자동</option><option value="manual">수동</option></select></label>
+<span id="ind"><label><input type="checkbox" data-k="vwap" checked>VWAP</label><label><input type="checkbox" data-k="st" checked>Supertrend</label><label><input type="checkbox" data-k="jma" checked>JMA</label><label><input type="checkbox" data-k="vol" checked>거래량</label><label><input type="checkbox" data-k="macd" checked>MACD</label></span>
+<button id="older">이전 캔들 +</button>
+<span class="sp"></span>
+<button id="buy" class="buy">매수</button><button id="exit" class="sell">즉시 청산</button><button id="cancel">미체결 취소</button><button id="hold">대기</button>
+</div>
+<div id="warn"></div><div id="appr"></div><div id="info"></div>
+<div id="chart"></div>
+<script src="/assets/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/assets/chart.js"></script>
+</body></html>
+<!-- END chart.html -->

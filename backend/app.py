@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse,JSONResponse,Response
 from fastapi.staticfiles import StaticFiles
 from .config import ROOT
 from .runtime import Runtime
+from .extras import TradeRuntime,register
 from .broker import BrokerError
 
 class SingleInstance:
@@ -25,7 +26,7 @@ def create_app(folder=None):
     token=secrets.token_urlsafe(32);folder=Path(folder or ROOT/'runtime');lock=SingleInstance(folder/'instance.lock')
     @asynccontextmanager
     async def lifespan(app):
-        lock.acquire();app.state.runtime=Runtime(folder);await app.state.runtime.start()
+        lock.acquire();app.state.runtime=TradeRuntime(folder);await app.state.runtime.start()
         try:yield
         finally:await app.state.runtime.stop();lock.release()
     app=FastAPI(title='S4.3-R Trader',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
@@ -111,6 +112,7 @@ def create_app(folder=None):
     async def export():
         s=app.state.runtime.state();s.pop('saved_credentials',None)
         return Response(json.dumps({'schema':'s43r-trader-report-v1',**s},ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="s43r-report-{s["date"]}.json"'})
+    register(app,body)
     @app.get('/')
     async def index():return FileResponse(ROOT/'frontend/index.html')
     app.mount('/assets',StaticFiles(directory=ROOT/'frontend'),name='assets')

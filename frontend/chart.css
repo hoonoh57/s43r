@@ -1,0 +1,7 @@
+*{box-sizing:border-box}body{margin:0;background:#0b1220;color:#cbd5e1;font:13px system-ui,"Malgun Gothic",sans-serif;display:flex;flex-direction:column;height:100vh}
+#bar{display:flex;gap:8px;align-items:center;padding:8px;flex-wrap:wrap;border-bottom:1px solid #1e293b}
+select,button{background:#111827;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:4px 8px}button{cursor:pointer}
+button.buy{background:#7f1d1d}button.sell{background:#1e3a8a}#ind label{margin-right:6px}.sp{flex:1}
+#warn{color:#fbbf24;padding:0 8px}#appr{padding:0 8px}#appr div{margin:4px 0;padding:6px;border:1px solid #f59e0b;border-radius:6px}
+#info{padding:2px 8px;color:#94a3b8;min-height:18px}#info.err{color:#f87171}#chart{flex:1;min-height:300px}
+/* END chart.css */
