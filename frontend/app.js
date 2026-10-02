@@ -48,7 +48,7 @@ async function refresh(){
  const sig=JSON.stringify(state.conditions);if(sig!==conditionSignature){conditionSignature=sig;$('condition').innerHTML=state.conditions.length?state.conditions.map(c=>`<option value="${esc(c.sequence)}">${esc(c.sequence)} · ${esc(c.name)}</option>`).join(''):'<option value="">접속 후 목록을 불러옵니다.</option>';if(s.condition_sequence)$('condition').value=s.condition_sequence;}
  $('problems').textContent=state.problems.join(' / ');$('problems').className='hint neg';await drawSelected();
 }
-async function drawSelected(){if($('desk').hidden)return;const w=state?.watch.find(w=>w.code===selected);$('chart-title').textContent=w?(w.name!==w.code?w.name+' · '+w.code:w.code):'신호 차트';$('chart-sub').textContent=w?.stage?w.stage+' · 완료 봉 · VWAP · 기준선':'완료 봉 · VWAP · +5.5% 기준선';$('capture').textContent=w?.capture?fmt(w.capture,1):'—';$('baseline').textContent=w?.baseline?fmt(w.baseline,1):'—';$('macd').textContent=w?.macd!=null?fmt(w.macd,3):'—';$('cum').textContent=w?.cum!=null?fmt(w.cum,2)+'억':'—';const osig=w?state.orders.filter(o=>o.code===w.code).map(o=>o.status+o.filled).join():'';const dsig=w?[w.code,w.bars_n,w.baseline,osig].join('|'):'';if(dsig&&dsig===drawSelected.sig&&lwChart)return;const cdata=selected?await api('chart/'+selected):{bars:[],baseline:0};draw(cdata);drawSelected.sig=dsig;}
+async function drawSelected(){if($('desk').hidden)return;const w=state?.watch.find(w=>w.code===selected);$('chart-title').textContent=w?(w.name!==w.code?w.name+' · '+w.code:w.code):'신호 차트';$('chart-sub').textContent=w?.stage?w.stage+' · 완료 봉 · VWAP · 기준선':'완료 봉 · VWAP · +5.5% 기준선';$('capture').textContent=w?.capture?fmt(w.capture,1):'—';$('baseline').textContent=w?.baseline?fmt(w.baseline,1):'—';$('macd').textContent=w?.macd!=null?fmt(w.macd,3):'—';$('cum').textContent=w?.cum!=null?fmt(w.cum,2)+'억':'—';const osig=w?state.orders.filter(o=>o.code===w.code).map(o=>o.status+o.filled).join():'';const dsig=w?[w.code,w.ticks,w.baseline,osig].join('|'):'';if(dsig&&dsig===drawSelected.sig&&lwChart)return;const cdata=selected?await api('chart/'+selected):{bars:[],baseline:0};draw(cdata);drawSelected.sig=dsig;}
 let lwChart=null,lwCandle=null,lwVwap=null,lwMarkers=null,lwBase=null,lwBaseVal=0,lwCode='';
 function chartHost(){let h=$('chart');if(h&&h.tagName==='CANVAS'){const hgt=h.getBoundingClientRect().height,d=document.createElement('div');d.id='chart';d.className=h.className;d.style.width='100%';h.replaceWith(d);if(!d.getBoundingClientRect().height)d.style.height=(hgt||320)+'px';h=d;}return h;}
 function ensureChart(){
@@ -62,7 +62,7 @@ function ensureChart(){
 function barTime(b){const d=String(b.date),t=String(b.full_time||(b.time+'00')).padStart(6,'0');return Date.UTC(+d.slice(0,4),+d.slice(4,6)-1,+d.slice(6,8),+t.slice(0,2),+t.slice(2,4),+t.slice(4,6))/1000;}
 function draw(data){
  if(!ensureChart())return;const L=window.LightweightCharts;
- const bars=(data.bars||[]).filter(b=>b.date===state?.date);let prev=0;
+ const all=data.bars||[];const day=all.some(b=>String(b.date)===state?.date)?state?.date:String(all.length?all[all.length-1].date:'');const bars=all.filter(b=>String(b.date)===day);let prev=0;
  const ts=bars.map(b=>{let t=barTime(b);if(!(t>prev))t=prev+1;prev=t;return t;});
  lwCandle.setData(bars.map((b,i)=>({time:ts[i],open:b.open,high:b.high,low:b.low,close:b.close})));
  lwVwap.setData(bars.flatMap((b,i)=>b.indicator?.vwap!=null?[{time:ts[i],value:b.indicator.vwap}]:[]));

@@ -10,4 +10,6 @@ section.panel.positions{display:none}
 .ops-panel tr.sel{background:rgba(45,212,191,.07)}
 .ops-panel input[type=checkbox]{width:15px;height:15px;cursor:pointer}
 #ops-msg{margin-left:auto;font-size:12px}
+.ops-bar select{width:auto!important;min-width:230px;flex:0 0 auto}
+.ops-bar button,.ops-bar label{width:auto!important;flex:0 0 auto}
 /* END desk_ops.css */
