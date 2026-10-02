@@ -1,0 +1,13 @@
+section.panel.positions{display:none}
+.ops-panel .ops-tabs{display:flex;gap:6px}
+.ops-panel .ops-tabs button{background:transparent;border:1px solid #223142;color:#728ba1;padding:5px 12px;border-radius:6px;cursor:pointer}
+.ops-panel .ops-tabs button.on{color:#e6edf3;border-color:#2dd4bf;background:rgba(45,212,191,.08)}
+.ops-panel .ops-tabs i{font-style:normal;margin-left:4px;color:#2dd4bf}
+.ops-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 0 10px}
+.ops-bar select,.ops-bar input{background:#0b1520;color:#d6e2ee;border:1px solid #223142;border-radius:6px;padding:5px 8px}
+.ops-bar input{width:64px}
+.ops-panel td small{display:block;color:#728ba1}
+.ops-panel tr.sel{background:rgba(45,212,191,.07)}
+.ops-panel input[type=checkbox]{width:15px;height:15px;cursor:pointer}
+#ops-msg{margin-left:auto;font-size:12px}
+/* END desk_ops.css */
