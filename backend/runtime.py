@@ -77,7 +77,7 @@ class Runtime:
             self.ledger=Ledger(self.store,f'ledger:{self.settings.mode}:{env}:{acct}:{self.date}')
             self.watch={};self.members=set();self.freeze_codes=set();self.frozen=False;self.subscribed=False;self.snapshot_received=False;self.conditions=[];self.unmatched=[]
             if save:self.vault.save(env,key,secret)
-            self.conditions=await broker.conditions();await self.reconcile()
+            self.conditions=await broker.conditions();await self.reconcile(adopt=True)
             self.source='키움 '+('모의' if env=='mock' else '실서버');self.event('connect',self.source+' 접속 · 계좌 '+self.masked_account())
         except Exception:
             self.connected=False;await broker.close();raise
@@ -104,7 +104,7 @@ class Runtime:
         self.store.record('condition_snapshot',{'sequence':str(seq),'codes':sorted(self.members),'entry_time_unknown':True})
         if now().strftime('%H%M%S')>='090300':
             self.frozen=True;self.freeze_codes=set();self.event('universe','09:03 이후 접속: 과거 편입을 추정하지 않으므로 오늘 신규 진입 대상 0개','warning')
-        codes=self.members|{c for c,p in self.ledger.positions.items() if p['qty']>0}|{o['code'] for o in self.ledger.pending()}
+        codes=self.members|{c for c,p in self.ledger.positions.items() if p['qty']>0 and not p.get('adopted')}|{o['code'] for o in self.ledger.pending()}
         for c in sorted(codes):self.add_watch(c)
         await self.register_ticks()
         for c in sorted(codes):self.task(self.warm(c))
@@ -252,7 +252,7 @@ class Runtime:
         s=self.settings;replay=s.mode=='replay';code=w['code'];side='buy' if sig['kind']=='entry' else 'sell'
         if self.ledger.pending(code):return
         p=self.ledger.positions.get(code)
-        if side=='buy' and (w.get('entry_blocked') or (p and p['entered'])):return
+        if side=='buy' and (w.get('entry_blocked') or (p and (p['entered'] or p.get('adopted')))):return
         if side=='sell' and (not p or p['qty']<=0):return
         try:price=self.risk_price(w,side,sig['price'],replay)
         except ValueError as e:self.event('risk',code+' '+str(e),'warning');return
@@ -260,7 +260,7 @@ class Runtime:
         if side=='buy':
             if not replay and (not self.reconciled or not self.connected):return
             if self.pnl_total()<=-s.daily_loss:self.entries=False;self.event('risk','일 손실 한도 · 신규 진입 중지','warning');return
-            pending=self.ledger.pending();held=[p for p in self.ledger.positions.values() if p['qty']>0]
+            pending=self.ledger.pending();held=[p for p in self.ledger.positions.values() if p['qty']>0 and not p.get('adopted')]
             if len(held)+sum(o['side']=='buy' for o in pending)>=s.max_positions:return
             exposure=sum(p['qty']*p['avg'] for p in held)+sum((o['qty']-o['filled'])*o['price'] for o in pending if o['side']=='buy')
             budget=min(s.allocation,s.max_exposure-exposure)
@@ -290,7 +290,7 @@ class Runtime:
         else:self.ledger.paper_fill(o,price,s.cost_pct)
         self.sync(w);self.event('order',f'{code} {"매수" if side=="buy" else "매도"} {qty}주 · {sig["reason"]} · {o["status"]}')
     def pnl_total(self):
-        return self.ledger.data['realized']+sum((self.watch.get(c,{}).get('quote',{}).get('price',p['avg'])-p['avg'])*p['qty'] for c,p in self.ledger.positions.items())
+        return self.ledger.data['realized']+sum((self.watch.get(c,{}).get('quote',{}).get('price',p['avg'])-p['avg'])*p['qty'] for c,p in self.ledger.positions.items() if not p.get('adopted'))
     async def fault(self,message,scope='entries',code=None):
         """scope
         - 'symbol' : 해당 종목만 격리(그 종목 신규 진입 금지 + 자동 재시드). 다른 종목은 정상 운용.
@@ -311,11 +311,11 @@ class Runtime:
                 scope='entries';self.last_error=code+' 보유 종목 시세 복구 실패 · 이 종목은 청산 감시 불가, 수동 확인 필요';self.event('error',self.last_error,'error')
         self.entries=False;self.reconciled=False
         if scope=='all':self.armed=False
-    async def reconcile(self):
+    async def reconcile(self,adopt=False):
         if not self.connected:raise ValueError('키움 접속이 필요합니다.')
         async with self.reconcile_lock:
             started=time.time()
-            snap=await self.broker.account_snapshot();self.snapshot=snap;self.cash=snap['cash'];self.cash_at=started
+            snap=await self.broker.account_snapshot();self.snapshot=snap;self.cash=snap['cash'];self.cash_at=started;self.adopt(snap,adopt)
             hard,soft=self.ledger.reconcile_detail(snap,SETTLE_SEC) if self.settings.broker_mode() else ([],[])
             self.problems=hard+soft
             self.soft_streak=self.soft_streak+1 if soft else 0
@@ -323,6 +323,32 @@ class Runtime:
             if self.armed and (hard or self.soft_streak>=2):
                 await self.fault(' / '.join(self.problems),scope='entries')
             return self.problems
+    def adopt(self,snap,startup=False):
+        """증권사 잔고 -> 원장 동기화. 앱이 오늘 주문하지 않은 종목만 '외부 보유'로 인수(자동매매 제외)."""
+        if not self.settings.broker_mode():return
+        L=self.ledger;now_ts=time.time()
+        busy={o['code'] for o in L.pending()}|{f['code'] for f in L.data['fills'] if now_ts-f['time']<SETTLE_SEC}
+        traded={o['code'] for o in L.orders}
+        actual={}
+        for r in snap['holdings']:
+            q=int(number(r.get('rmnd_qty')))
+            if q>0:actual[symbol(r['stk_cd'])]=(q,abs(number(r.get('pur_pric'))) or abs(number(r.get('cur_prc'))),str(r.get('stk_nm','')).strip())
+        changed=[]
+        for c in sorted(set(actual)|{c for c,p in L.positions.items() if p.get('adopted')}):
+            if c in busy:continue
+            p=L.positions.get(c)
+            if p is not None and not p.get('adopted'):continue
+            if p is None and c in traded:continue
+            q,avg,name=actual.get(c,(0,0.0,''))
+            if p is None:
+                if not q:continue
+                L.positions[c]={'code':c,'qty':q,'entry_qty':q,'entry_amount':q*avg,'avg':avg,'realized':0.0,'stages':{},'entered':False,'closed':False,'entry_time':None,'high':0.0,'adopted':True,'name':name}
+                changed.append(f'{c} {q}주 인수')
+            elif p['qty']!=q:
+                changed.append(f"{c} {p['qty']}->{q}주");p.update(qty=q,entry_qty=max(p['entry_qty'],q),closed=not q)
+                if q and avg:p.update(avg=avg,entry_amount=q*avg)
+        if changed:
+            L.save();self.event('account',('기동 시 ' if startup else '')+'외부 보유 동기화 · '+', '.join(changed)+' · 자동매매 제외')
     def available_cash(self):
         """스냅샷 현금 - 미체결 매수 - 스냅샷 전후 매수 체결. 이중 차감을 허용하는 보수적 계산."""
         pend=sum((o['qty']-o['filled'])*o['price'] for o in self.ledger.pending() if o['side']=='buy')
@@ -339,7 +365,7 @@ class Runtime:
         if action=='arm':
             if not self.connected or not self.subscribed:raise ValueError('접속 후 조건식을 구독하세요.')
             if self.settings.mode=='record':raise ValueError('기록 전용 모드입니다.')
-            if any(p['qty'] and not self.watch.get(c,{}).get('ready') for c,p in self.ledger.positions.items()):raise ValueError('보유 종목의 시드 준비를 먼저 완료하세요.')
+            if any(p['qty'] and not p.get('adopted') and not self.watch.get(c,{}).get('ready') for c,p in self.ledger.positions.items()):raise ValueError('보유 종목의 시드 준비를 먼저 완료하세요.')
             await self.reconcile()
             if not self.reconciled:raise ValueError('계좌 대조 오류: '+' / '.join(self.problems))
             expected=('실거래 시작 '+self.account[-4:]) if self.settings.mode=='live' else '자동매매 시작'
@@ -445,7 +471,7 @@ class Runtime:
         gap=(e.base_price/price-1)*100 if e.base_price and price else None
         ok=bool(checks) and checks['trend'] and checks['macd'] and checks['jma'] and checks['cum'] and (checks['base'] or checks['early'])
         p=self.ledger.positions.get(w['code'])
-        if p and p['qty']>0:stage='보유 중'
+        if p and p['qty']>0:stage='외부 보유 · 자동매매 제외' if p.get('adopted') else '보유 중'
         elif p and p.get('closed'):stage='청산 완료'
         elif w.get('entry_blocked'):stage='진입 제외 · 시세 단절'
         elif not w['ready']:stage=w['status']
