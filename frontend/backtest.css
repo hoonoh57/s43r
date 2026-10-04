@@ -1,0 +1,32 @@
+.backtest-view{padding-bottom:20px}
+.bt-control-panel{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:18px}
+.bt-control-panel label{margin:0;min-width:150px;color:#9aadbf}
+.bt-control-panel input{margin-top:7px}
+.bt-control-panel #bt-symbol{max-width:140px}
+.bt-control-panel #bt-date{max-width:170px}
+.bt-control-panel #bt-capital{max-width:190px}
+.bt-control-panel button{min-height:39px}
+#bt-status{flex:1 1 100%;min-height:18px;color:#9aadbf;font-size:12px}
+#bt-status[data-state="loading"]{color:#eac57c}
+#bt-status[data-state="success"]{color:#63dca6}
+#bt-status[data-state="error"]{color:#ff8390}
+#bt-status[data-state="warning"]{color:#eac57c}
+.bt-panel{padding:0}
+.bt-panel .panel-head{border-bottom:1px solid #1f2c3b}
+.bt-panel .panel-head h2{font-size:14px}
+.bt-metrics th,.bt-metrics td{padding:11px 18px}
+.bt-metrics th:first-child,.bt-metrics td:first-child{text-align:left}
+.bt-frozen{color:#5ddbd2!important}
+.bt-r2{color:#eac57c!important}
+.bt-r3{color:#63dca6!important}
+.bt-chart-head{border-bottom:0}
+.bt-legend{display:flex;gap:14px;font-size:11px}
+#bt-chart-container{height:350px;width:100%}
+@media(max-width:720px){
+ .bt-control-panel{align-items:stretch}
+ .bt-control-panel label{flex:1 1 145px}
+ .bt-control-panel button{flex:1 1 100%}
+ .bt-legend{gap:8px;font-size:10px}
+ .bt-metrics th,.bt-metrics td{padding:10px 8px;font-size:10px}
+ #bt-chart-container{height:280px}
+}

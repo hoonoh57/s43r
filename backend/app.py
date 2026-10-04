@@ -13,10 +13,6 @@ from .desk_ops import register_ops
 
 from backend.routers.backtest import router as backtest_router
 
-app.include_router(backtest_router)
-
-
-
 class SingleInstance:
     def __init__(self,path):self.path=path;self.file=None
     def acquire(self):
@@ -38,6 +34,7 @@ def create_app(folder=None):
         try:yield
         finally:await app.state.runtime.stop();lock.release()
     app=FastAPI(title='S4.3-R Trader',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
+    app.include_router(backtest_router)
     @app.middleware('http')
     async def local_only(request,call_next):
         host=request.headers.get('host','').split(':')[0]

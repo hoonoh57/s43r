@@ -5,7 +5,7 @@ from fastapi import Request
 from fastapi.responses import FileResponse
 from .config import ROOT
 from .market import TickBars
-from .strategy import S43REngine,StrategyConfig,SOURCE_SHA256
+from .strategy import StrategyConfig,SOURCE_SHA256
 from .variants import engine_for
 DIR=ROOT/'ticks'
 SKIP=('target_date','utc_offset_minutes')
@@ -36,9 +36,12 @@ def config(date,params):
         t=type(base[k])
         kw[k]=(v is True or str(v).lower() in ('true','1','on')) if t is bool else str(v).replace(':','').zfill(4) if t is str else float(v)
     return StrategyConfig(target_date=date,**kw)
-def simulate(d,size=360,params=None,slip=1,cost_pct=0.25,capital=1_000_000):
+def simulate(d,size=360,params=None,slip=1,cost_pct=0.25,capital=1_000_000,slippage_bps=None):
     date=str(d['date']);cfg=config(date,params);e=engine_for((params or {}).get('strategy'))(cfg);tb=TickBars(int(size))
     size=int(size);slip=int(slip);cost_pct=float(cost_pct);capital=float(capital)
+    if slippage_bps is not None:
+        slippage_bps=float(slippage_bps)
+        if not math.isfinite(slippage_bps) or slippage_bps<0:raise ValueError('슬리피지 bp는 0 이상이어야 합니다.')
     if not 10<=size<=3000:raise ValueError('틱 수는 10~3000')
     bars=[];fills=[];signals=[];queue=[];eq=[];st={'qty':0,'eq':0,'avg':0.0,'real':0.0,'t':0}
     start=-1
@@ -46,13 +49,14 @@ def simulate(d,size=360,params=None,slip=1,cost_pct=0.25,capital=1_000_000):
         u=tick_unit(p);k=s['kind']
         if k=='entry':
             if st['qty']:return
-            px=p+slip*u;n=int(capital//(px*(1+cost_pct/200)))
+            px=p+(p*slippage_bps/10000 if slippage_bps is not None else slip*u);n=int(capital//(px*(1+cost_pct/200)))
             if n<=0:return
             st.update(qty=n,eq=n,avg=px);fee=px*n*cost_pct/200;st['real']-=fee
         else:
             n=st['qty'] if k=='exit' else min(st['qty'],int(st['eq']*cfg.tp_fraction))
             if n<=0:return
-            px=max(u,p-slip*u);fee=px*n*cost_pct/200;st['real']+=(px-st['avg'])*n-fee;st['qty']-=n
+            slip_amount=p*slippage_bps/10000 if slippage_bps is not None else slip*u
+            px=max(u,p-slip_amount);fee=px*n*cost_pct/200;st['real']+=(px-st['avg'])*n-fee;st['qty']-=n
         fills.append({'t':st['t'],'side':'buy' if k=='entry' else 'sell','kind':k,'reason':s['reason'],'qty':n,'price':px,'signal':s['price'],'fee':round(fee),'realized':round(st['real'])})
     for row in d['ticks']:
         dt=str(row[0]);tm=str(row[1]);tm=tm.zfill(6) if len(tm)>4 else tm.zfill(4)+'00';p=abs(float(row[2]));v=abs(float(row[3]))
@@ -76,7 +80,7 @@ def simulate(d,size=360,params=None,slip=1,cost_pct=0.25,capital=1_000_000):
     day=eq[start:];peak=-1e18;mdd=0
     for x in day:peak=max(peak,x);mdd=min(mdd,x-peak)
     net=eq[-1] if eq else 0;res=e.result()
-    return {'identity':{'file':d.get('file',''),'code':d.get('code'),'date':date,'size':size,'slip':slip,'cost_pct':cost_pct,'capital':capital,'engine':SOURCE_SHA256[:12],'params':dataclasses.asdict(cfg)},
+    return {'identity':{'file':d.get('file',''),'code':d.get('code'),'date':date,'size':size,'slip':slip,'slippage_bps':slippage_bps,'cost_pct':cost_pct,'capital':capital,'engine':SOURCE_SHA256[:12],'params':dataclasses.asdict(cfg)},
         'code':d.get('code'),'name':d.get('name',''),'date':date,'start':start,'warm':start,'bars':bars,'signals':signals,'fills':fills,'equity':eq,'warnings':warn,
         'stats':{'net':net,'ret':round(net/capital*100,3),'mdd':mdd,'fills':len(fills),'entered':res['entered'],'reason':res['exitReason'],'entry':res['entryTime'],'model_pnl':round(res['pnl'],3)}}
 def register_sim(app):
