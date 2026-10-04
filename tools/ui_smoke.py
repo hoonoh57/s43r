@@ -8,7 +8,7 @@ with sync_playwright() as p:
     page=browser.new_page(viewport={'width':1536,'height':1120},device_scale_factor=1)
     errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.on('console',lambda m:errors.append(m.text) if m.type=='error' else None)
-    page.goto('http://127.0.0.1:8765',wait_until='networkidle')
+    page.goto('http://127.0.0.1:8775',wait_until='networkidle')
     page.locator('#demo').click()
     expect(page.locator('#run-status')).to_have_text('리플레이 실행 중')
     expect(page.locator('#watch-body tr')).to_have_count(3)

@@ -1,5 +1,5 @@
-# stop.ps1 -- ASCII only. Stops every process on port 8765 (any folder) + stale s43r instances.
-param([int]$Port = 8765)
+# stop.ps1 -- ASCII only. Stops every process on port 8775 (any folder) + stale s43r instances.
+param([int]$Port = 8775)
 $ErrorActionPreference = 'Continue'
 Set-Location -LiteralPath $PSScriptRoot
 $base = "http://127.0.0.1:$Port"

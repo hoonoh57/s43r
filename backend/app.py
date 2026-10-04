@@ -11,6 +11,12 @@ from .broker import BrokerError
 from .sim import register_sim
 from .desk_ops import register_ops
 
+from backend.routers.backtest import router as backtest_router
+
+app.include_router(backtest_router)
+
+
+
 class SingleInstance:
     def __init__(self,path):self.path=path;self.file=None
     def acquire(self):
@@ -126,4 +132,4 @@ def create_app(folder=None):
 app=create_app()
 if __name__=='__main__':
     import uvicorn
-    uvicorn.run(app,host='127.0.0.1',port=int(os.environ.get('S43R_PORT','8765')),access_log=False)
+    uvicorn.run(app,host='127.0.0.1',port=int(os.environ.get('S43R_PORT','8775')),access_log=False)
