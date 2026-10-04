@@ -42,7 +42,7 @@ def create_app(folder=None):
         origin=request.headers.get('origin')
         if origin and origin!='http://'+request.headers.get('host',''):return JSONResponse({'detail':'다른 출처의 요청은 허용하지 않습니다.'},status_code=403)
         if request.method not in ('GET','HEAD'):
-            if not secrets.compare_digest(request.headers.get('x-session',''),token):return JSONResponse({'detail':'화면을 새로고침하세요.'},status_code=403)
+            if (request.method,request.url.path)!=('POST','/api/backtest/run-compare') and not secrets.compare_digest(request.headers.get('x-session',''),token):return JSONResponse({'detail':'화면을 새로고침하세요.'},status_code=403)
             try:size=int(request.headers.get('content-length','0'))
             except ValueError:size=17*1024*1024
             if size>16*1024*1024:return JSONResponse({'detail':'16 MB 이하 JSON을 사용하세요.'},status_code=413)
